@@ -65,7 +65,7 @@ class TimestepBlock(nn.Module):
     """
 
     @abstractmethod
-    def forward(self, x, emb):
+    def forward(self, x, emb, film: tuple = None):
         """
         Apply the module to `x` given `emb` timestep embeddings.
         """
@@ -77,10 +77,16 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     support it as an extra input.
     """
 
-    def forward(self, x, emb, context=None):
+    def forward(self, x, emb, context=None, film_params=None):
         for layer in self:
             if isinstance(layer, TimestepBlock):
-                x = layer(x, emb)
+                if isinstance(layer, ResBlock):
+                    film = None
+                    if film_params is not None:
+                        film = film_params.get(layer.out_channels, None)
+                    x = layer(x, emb, film=film)
+                else:
+                    x = layer(x, emb)
             elif isinstance(layer, SpatialTransformer):
                 x = layer(x, context)
             else:
@@ -248,11 +254,11 @@ class ResBlock(TimestepBlock):
         :return: an [N x C x ...] Tensor of outputs.
         """
         return checkpoint(
-            self._forward, (x, emb), self.parameters(), self.use_checkpoint
+            self._forward, (x, emb, film), self.parameters(), self.use_checkpoint
         )
 
 
-    def _forward(self, x, emb):
+    def _forward(self, x, emb, film: tuple = None):
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
             h = in_rest(x)
@@ -261,6 +267,13 @@ class ResBlock(TimestepBlock):
             h = in_conv(h)
         else:
             h = self.in_layers(x)
+
+        if film is not None:
+            gamma, beta = film
+            if gamma is not None and beta is not None:
+                gamma = gamma.view(h.shape[0], h.shape[1], 1, 1)
+                beta = beta.view(h.shape[0], h.shape[1], 1, 1)
+                h = h * (1 + gamma) + beta
         emb_out = self.emb_layers(emb).type(h.dtype)
         while len(emb_out.shape) < len(h.shape):
             emb_out = emb_out[..., None]
@@ -465,6 +478,7 @@ class UNetModel(nn.Module):
         transformer_depth=1,              # custom transformer support
         context_local_dim=None,
         context_dim=None,                 # custom transformer support
+        film_cond_dim=None,               # global image FiLM conditioning
         n_embed=None,                     # custom support for prediction of discrete ids into codebook of first stage vq model
         legacy=True,
     ):
@@ -503,6 +517,9 @@ class UNetModel(nn.Module):
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
         self.predict_codebook_ids = n_embed is not None
+        self.film_cond_dim = film_cond_dim
+        self.use_film = film_cond_dim is not None
+        self.film_mlps = nn.ModuleDict()
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
@@ -684,6 +701,26 @@ class UNetModel(nn.Module):
                 self.output_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
 
+        if self.use_film:
+            unique_channels = set()
+            for block in self.input_blocks:
+                for layer in block:
+                    if isinstance(layer, ResBlock):
+                        unique_channels.add(layer.out_channels)
+            for layer in self.middle_block:
+                if isinstance(layer, ResBlock):
+                    unique_channels.add(layer.out_channels)
+            for block in self.output_blocks:
+                for layer in block:
+                    if isinstance(layer, ResBlock):
+                        unique_channels.add(layer.out_channels)
+            for ch_size in unique_channels:
+                self.film_mlps[str(ch_size)] = nn.Sequential(
+                    nn.Linear(film_cond_dim, film_cond_dim),
+                    nn.SiLU(),
+                    nn.Linear(film_cond_dim, 2 * ch_size)
+                )
+
         self.out = nn.Sequential(
             normalization(ch),
             nn.SiLU(),
@@ -712,7 +749,7 @@ class UNetModel(nn.Module):
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps=None, c_local=None, c_global=None):
+    def forward(self, x, timesteps=None, c_local=None, c_global=None, c_film=None):
         """
         Apply the model to an input batch.
         :param x: an [N x C x ...] Tensor of inputs.
@@ -728,14 +765,22 @@ class UNetModel(nn.Module):
         context_local = self.context_local_mlp(c_local)
         context = th.cat([context_local, c_global], dim=1)
 
+        film_params = None
+        if self.use_film and c_film is not None:
+            film_params = {}
+            for ch_size, mlp in self.film_mlps.items():
+                gamma_beta = mlp(c_film)
+                gamma, beta = gamma_beta.chunk(2, dim=1)
+                film_params[int(ch_size)] = (gamma, beta)
+
         h = x.type(self.dtype)
         for module in self.input_blocks:
-            h = module(h, emb, context)
+            h = module(h, emb, context, film_params)
             hs.append(h)
-        h = self.middle_block(h, emb, context)
+        h = self.middle_block(h, emb, context, film_params)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, emb, context)
+            h = module(h, emb, context, film_params)
         h = h.type(x.dtype)
         if self.predict_codebook_ids:
             return self.id_predictor(h)
@@ -770,6 +815,7 @@ class EncoderUNetModel(nn.Module):
         resblock_updown=False,
         use_new_attention_order=False,
         pool="adaptive",
+        film_cond_dim: int = None,
         *args,
         **kwargs
     ):

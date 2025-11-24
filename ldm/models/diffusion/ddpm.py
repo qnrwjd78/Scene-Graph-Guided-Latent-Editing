@@ -405,6 +405,7 @@ class LatentDiffusion(DDPM):
                  conditioning_key=None,
                  scale_factor=1.0,
                  scale_by_std=False,
+                 global_stage_config=None,
                  *args, **kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         self.scale_by_std = scale_by_std
@@ -429,6 +430,7 @@ class LatentDiffusion(DDPM):
             self.register_buffer('scale_factor', torch.tensor(scale_factor))
         self.instantiate_first_stage(first_stage_config)
         self.instantiate_cond_stage(cond_stage_config)
+        self.instantiate_global_stage(global_stage_config)
         self.cond_stage_forward = cond_stage_forward
         self.clip_denoised = False
         self.bbox_tokenizer = None
@@ -496,6 +498,17 @@ class LatentDiffusion(DDPM):
             model = instantiate_from_config(config)
             self.cond_stage_model = model
 
+    def instantiate_global_stage(self, config):
+        if config is None:
+            self.global_context_encoder = None
+            return
+        model = instantiate_from_config(config)
+        # CLIP/image encoder는 고정, FiLM은 UNet 측에서 학습
+        self.global_context_encoder = model.eval()
+        self.global_context_encoder.train = disabled_train
+        for p in self.global_context_encoder.parameters():
+            p.requires_grad = False
+
     def _get_denoise_row_from_list(self, samples, desc='', force_no_decoder_quantization=False):
         denoise_row = []
         for zd in tqdm(samples, desc=desc):
@@ -517,11 +530,11 @@ class LatentDiffusion(DDPM):
             raise NotImplementedError(f"encoder_posterior of type '{type(encoder_posterior)}' not yet implemented")
         return self.scale_factor * z
 
-    def get_learned_conditioning(self, c):
+    def get_learned_conditioning(self, c, film=None):
         c_local, c_global = self.cond_stage_model.encode_graph_local_global(c)
         c_local = c_local.detach()
         c_global = c_global.unsqueeze(1).detach()
-        c = {'c_local': c_local, 'c_global': c_global}
+        c = {'c_local': c_local, 'c_global': c_global, 'c_film': film}
         return c
 
     def meshgrid(self, h, w):
@@ -619,7 +632,11 @@ class LatentDiffusion(DDPM):
         z = self.get_first_stage_encoding(encoder_posterior).detach()
 
         graph_info = [all_imgs, all_objs, all_boxes, all_triples, all_obj_to_img, all_triple_to_img]
-        c = self.get_learned_conditioning(graph_info)
+        film_embed = None
+        if hasattr(self, "global_context_encoder") and self.global_context_encoder is not None:
+            with torch.no_grad():
+                film_embed = self.global_context_encoder(all_imgs)
+        c = self.get_learned_conditioning(graph_info, film=film_embed)
 
         out = [z, c]
         if return_first_stage_outputs:
@@ -1256,8 +1273,8 @@ class DiffusionWrapper(pl.LightningModule):
         self.conditioning_key = conditioning_key
         assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm']
 
-    def forward(self, x, t, c_local=None, c_global=None):
+    def forward(self, x, t, c_local=None, c_global=None, c_film=None):
 
-        out = self.diffusion_model(x, t, c_local=c_local, c_global=c_global)
+        out = self.diffusion_model(x, t, c_local=c_local, c_global=c_global, c_film=c_film)
 
         return out

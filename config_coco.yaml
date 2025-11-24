@@ -36,6 +36,7 @@ model:
         transformer_depth: 1
         context_local_dim: 1536
         context_dim: 512
+        film_cond_dim: 512
     first_stage_config:
       target: ldm.models.autoencoder.VQModelInterface
       params:
@@ -69,6 +70,11 @@ model:
         width: 512
         embed_dim: 512
         ckpt_path: pretrained/sip_coco.pt
+    global_stage_config:
+      target: ldm.modules.global_context.clip_film.ClipImageEncoder
+      params:
+        clip_name: "ViT-B/32"
+        ckpt_path: null
 data:
   target: scripts.datamodule.DataModuleFromConfig
   params:
