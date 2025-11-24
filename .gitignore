@@ -1,0 +1,21 @@
+# Large/local assets
+pretrained/
+datasets/
+*.ckpt
+*.pth
+
+# Caches / logs
+logs/
+wandb/
+*.log
+*.tmp
+__pycache__/
+*.pyc
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

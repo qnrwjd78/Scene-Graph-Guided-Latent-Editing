@@ -14,7 +14,7 @@ python setup.py install
 Run the following script to download and unpack the relevant parts of the Visual Genome dataset:
 
 ```bash
-bash scripts/download_vg.sh
+d
 ```
 
 This will create the directory `datasets/vg` and will download about 15 GB of data to this directory; after unpacking it will take about 30 GB of disk space.
