@@ -106,5 +106,14 @@ lightning:
         batch_frequency: 10000
         max_images: 16
         increase_log_steps: False
+    checkpoint:
+      target: pytorch_lightning.callbacks.ModelCheckpoint
+      params:
+        dirpath: logs/film_ckpt
+        filename: "film-{epoch:04d}"
+        save_last: true
+        save_top_k: 3
+        monitor: "val/loss_simple_ema"
+        mode: "min"
   trainer:
     benchmark: True

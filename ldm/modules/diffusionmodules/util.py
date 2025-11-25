@@ -109,11 +109,14 @@ def checkpoint(func, inputs, params, flag):
                    explicitly take as arguments.
     :param flag: if False, disable gradient checkpointing.
     """
-    if flag:
-        args = tuple(inputs) + tuple(params)
-        return CheckpointFunction.apply(func, len(inputs), *args)
-    else:
+    if not flag:
         return func(*inputs)
+    # checkpoint가 의미 있으려면 최소한 하나의 입력이나 파라미터가 requires_grad여야 함
+    trainable_params = [p for p in params if getattr(p, "requires_grad", False)]
+    if all((not getattr(x, "requires_grad", False) for x in inputs)) and len(trainable_params) == 0:
+        return func(*inputs)
+    args = tuple(inputs) + tuple(trainable_params)
+    return CheckpointFunction.apply(func, len(inputs), *args)
 
 
 class CheckpointFunction(torch.autograd.Function):

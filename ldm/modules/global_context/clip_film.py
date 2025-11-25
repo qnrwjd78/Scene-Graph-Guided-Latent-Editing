@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torchvision.transforms as T
+import torch.nn.functional as F
 
 
 class ClipImageEncoder(nn.Module):
@@ -19,7 +19,11 @@ class ClipImageEncoder(nn.Module):
                 "로컬에 설치된 패키지를 사용하세요."
             ) from exc
 
-        model, _ = clip.load(clip_name, device="cpu", download=False)
+        try:
+            model, _ = clip.load(clip_name, device="cpu", download=False)
+        except TypeError:
+            # older clip versions do not accept download flag
+            model, _ = clip.load(clip_name, device="cpu")
         if ckpt_path is not None:
             state = torch.load(ckpt_path, map_location="cpu")
             model.load_state_dict(state, strict=False)
@@ -28,6 +32,8 @@ class ClipImageEncoder(nn.Module):
         for p in model.parameters():
             p.requires_grad = False
         self.model = model.eval()
+        # CLIP ViT는 고정 해상도 입력을 기대함
+        self.input_res = getattr(model.visual, "input_resolution", 224)
 
         # CLIP 기본 normalize
         self.register_buffer(
@@ -45,8 +51,17 @@ class ClipImageEncoder(nn.Module):
         image: [-1,1] 범위의 BCHW 텐서 (Stage2의 입력 이미지를 그대로 사용)
         return: [B, D] global embedding
         """
+        device = image.device
+        # ensure encoder is on the same device as input
+        if next(self.model.parameters()).device != device:
+            self.model = self.model.to(device)
+            self.mean = self.mean.to(device)
+            self.std = self.std.to(device)
+
         x = (image + 1) * 0.5
         x = (x - self.mean) / self.std
+        if x.shape[-1] != self.input_res or x.shape[-2] != self.input_res:
+            x = F.interpolate(x, size=(self.input_res, self.input_res), mode="bicubic", align_corners=False)
         # CLIP expects float32
         x = x.to(dtype=torch.float32)
         return self.model.encode_image(x)

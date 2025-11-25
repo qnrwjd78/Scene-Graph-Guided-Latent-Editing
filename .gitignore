@@ -4,6 +4,8 @@ datasets/
 *.ckpt
 *.pth
 
+# Result
+
 # Caches / logs
 logs/
 wandb/

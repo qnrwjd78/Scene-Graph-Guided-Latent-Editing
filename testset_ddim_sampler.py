@@ -14,12 +14,23 @@ import os
 import h5py
 import tempfile
 from einops import rearrange
+import argparse
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
-def get_model():
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ckpt", default="./pretrained_model.ckpt", help="Path to model checkpoint")
+    parser.add_argument("--ddim_steps", type=int, default=200)
+    parser.add_argument("--ddim_eta", type=float, default=1.0)
+    parser.add_argument("--start_index", type=int, default=2500, help="skip samples before this index")
+    parser.add_argument("--max_index", type=int, default=3000, help="stop after this index")
+    parser.add_argument("--inversion", action="store_true", help="Use DDIM inversion (encode real image to x_T, then decode)")
+    return parser.parse_args()
+
+def get_model(args):
     config = OmegaConf.load("./config_vg.yaml")
-    model = load_model_from_config(config, "./pretrained_model.ckpt")
+    model = load_model_from_config(config, args.ckpt)
     return model
 
 def build_loaders():
@@ -39,13 +50,33 @@ def build_loaders():
     loader = DataLoader(dset, batch_size=1, num_workers=4, shuffle=False, collate_fn=collate_fn)
     return loader
 
+@torch.no_grad()
+def ddim_inversion(sampler, x0, cond, steps, eta=0.0):
+    """
+    Deterministic DDIM inversion: x0 -> x_T by stepping forward using model predictions.
+    """
+    sampler.make_schedule(ddim_num_steps=steps, ddim_eta=eta, verbose=False)
+    x_t = x0
+    device = x0.device
+    for i in range(len(sampler.ddim_timesteps) - 1):
+        t = torch.full((x_t.shape[0],), sampler.ddim_timesteps[i], device=device, dtype=torch.long)
+        e_t = sampler.model.apply_model(x_t, t, cond)
+        a_t = sampler.ddim_alphas[i]
+        a_next = sampler.ddim_alphas[i + 1]
+        # pred_x0 from current estimate
+        pred_x0 = (x_t - torch.sqrt(1. - a_t) * e_t) / torch.sqrt(a_t)
+        e_t = (x_t - torch.sqrt(a_t) * pred_x0) / torch.sqrt(1. - a_t)
+        x_t = torch.sqrt(a_next) * pred_x0 + torch.sqrt(1. - a_next) * e_t
+    return x_t
+
 
 def main():
-    model = get_model()
+    args = parse_args()
+    model = get_model(args)
     sampler = DDIMSampler(model)
 
-    ddim_steps = 200
-    ddim_eta = 1.0
+    ddim_steps = args.ddim_steps
+    ddim_eta = args.ddim_eta
 
     vocab_file = './datasets/vg/vocab.json'
     with open(vocab_file, 'r') as f:
@@ -71,7 +102,7 @@ def main():
             img_idx = -1
             for batch_data in loader:
                 img_idx += 1
-                if img_idx < 2500:
+                if img_idx < args.start_index:
                     continue
                 imgs, objs, boxes, triples, obj_to_img, triple_to_img = [x.cuda() for x in batch_data]
 
@@ -81,12 +112,25 @@ def main():
                 graph_info = [imgs, objs, None, triples, obj_to_img, triple_to_img]
                 cond = model.get_learned_conditioning(graph_info)
 
-                samples_ddim, _ = sampler.sample(S=ddim_steps,
-                                                 conditioning=cond,
-                                                 batch_size=n_samples_per_scene_graph,
-                                                 shape=[4, 32, 32],
-                                                 verbose=False,
-                                                 eta=ddim_eta)
+                if args.inversion:
+                    # encode real image to latent, invert to x_T, then decode with same cond
+                    encoder_posterior = model.encode_first_stage(imgs)
+                    z0 = model.get_first_stage_encoding(encoder_posterior).detach()
+                    x_T = ddim_inversion(sampler, z0, cond, steps=ddim_steps, eta=ddim_eta)
+                    samples_ddim, _ = sampler.sample(S=ddim_steps,
+                                                     conditioning=cond,
+                                                     batch_size=n_samples_per_scene_graph,
+                                                     shape=[4, 32, 32],
+                                                     verbose=False,
+                                                     eta=ddim_eta,
+                                                     x_T=x_T)
+                else:
+                    samples_ddim, _ = sampler.sample(S=ddim_steps,
+                                                     conditioning=cond,
+                                                     batch_size=n_samples_per_scene_graph,
+                                                     shape=[4, 32, 32],
+                                                     verbose=False,
+                                                     eta=ddim_eta)
 
                 x_samples_ddim = model.decode_first_stage(samples_ddim)
                 x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
@@ -94,7 +138,7 @@ def main():
                 x_samples_ddim = 255. * rearrange(x_samples_ddim, 'c h w -> h w c').cpu().numpy()
                 results = Image.fromarray(x_samples_ddim.astype(np.uint8))
                 results.save(os.path.join(generate_img_dir, str(img_idx)+'_img.png'))                
-                if img_idx > 3000:
+                if img_idx > args.max_index:
                     break
     return None
 

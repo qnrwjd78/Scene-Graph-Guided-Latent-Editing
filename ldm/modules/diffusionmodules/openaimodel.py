@@ -246,16 +246,16 @@ class ResBlock(TimestepBlock):
         else:
             self.skip_connection = conv_nd(dims, channels, self.out_channels, 1)
 
-    def forward(self, x, emb):
+    def forward(self, x, emb, film: tuple = None):
         """
         Apply the block to a Tensor, conditioned on a timestep embedding.
         :param x: an [N x C x ...] Tensor of features.
         :param emb: an [N x emb_channels] Tensor of timestep embeddings.
+        :param film: optional (gamma, beta) for FiLM modulation.
         :return: an [N x C x ...] Tensor of outputs.
         """
-        return checkpoint(
-            self._forward, (x, emb, film), self.parameters(), self.use_checkpoint
-        )
+        # checkpoint 비활성화: 동결 파라미터가 많을 때 autograd 문제가 발생하므로 바로 실행
+        return self._forward(x, emb, film)
 
 
     def _forward(self, x, emb, film: tuple = None):
@@ -325,8 +325,8 @@ class AttentionBlock(nn.Module):
         self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
 
     def forward(self, x):
-        return checkpoint(self._forward, (x,), self.parameters(), True)
-        #return pt_checkpoint(self._forward, x)  # pytorch
+        # disable custom checkpointing to avoid grad issues when most params are frozen
+        return self._forward(x)
 
     def _forward(self, x):
         b, c, *spatial = x.shape
