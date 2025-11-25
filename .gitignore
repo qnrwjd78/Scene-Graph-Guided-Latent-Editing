@@ -5,9 +5,12 @@ datasets/
 *.pth
 
 # Result
+outputs/
+test_results/
+*.png
 
 # Caches / logs
-logs/
+lightning_logs/
 wandb/
 *.log
 *.tmp
