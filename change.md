@@ -1,5 +1,0 @@
-- Stage2 모델에 글로벌 컨텍스트 경로 추가: 레퍼런스 이미지를 CLIP 이미지 인코더(`ldm/modules/global_context/clip_film.py`)로 임베딩해 FiLM(γ, β)으로 UNet 잔차블록을 변조.
-- UNet(`ldm/modules/diffusionmodules/openaimodel.py`)에 FiLM 어댑터 추가, `film_cond_dim` 지원, `c_film` 전달 경로 추가.
-- Diffusion 파이프라인(`ldm/models/diffusion/ddpm.py`)이 글로벌 인코더를 초기화·사용하도록 수정, conditioning dict에 `c_film` 포함.
-- 설정 업데이트: `config_vg.yaml`, `config_coco.yaml`에 `film_cond_dim`과 `global_stage_config`(CLIP 이미지 인코더) 추가.
-- 새로운 학습 스크립트 `train_stage2.py` 추가: CLIP/UNet 본체 동결, FiLM 어댑터만 학습하도록 설정해 Stage2 재학습 용도 제공.

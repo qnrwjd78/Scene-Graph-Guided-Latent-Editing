@@ -147,14 +147,16 @@ def main():
     args = parser.parse_args()
     
     os.makedirs(args.output_dir, exist_ok=True)
-    device = torch.device("cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    torch.cuda.empty_cache()
     
     # 1. Load Models
     print("Loading models...")
-    pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+    pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16)
     pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-    # pipe.enable_sequential_cpu_offload() # Not needed for CPU
-    # pipe.enable_attention_slicing()
+    pipe.enable_model_cpu_offload()
+    pipe.enable_attention_slicing()
     
     # Inject Dual LoRA
     inject_dual_lora(pipe.unet)
@@ -163,7 +165,7 @@ def main():
     gcn = GCNWrapper(
         vocab_file=os.path.join(project_root, "datasets/vg/vocab.json"),
         checkpoint_path=os.path.join(project_root, "pretrained/sip_vg.pt")
-    ).to(device)
+    ).to(device, dtype=torch.float16)
     gcn.eval()
     
     adapter = SceneGraphEmbedder().to(device)
@@ -176,7 +178,7 @@ def main():
         print(f"Loaded adapter from {args.adapter_path}")
     else:
         print(f"Warning: Adapter checkpoint {args.adapter_path} not found. Using random weights.")
-    # adapter.to(dtype=torch.float16)
+    adapter.to(dtype=torch.float16)
     adapter.eval()
     
     # 2. Prepare Data
@@ -210,8 +212,8 @@ def main():
         
         # Use get_raw_features instead of forward
         obj_vecs, pred_vecs = gcn.get_raw_features(graphs)
-        # obj_vecs = obj_vecs.to(dtype=torch.float16)
-        # pred_vecs = pred_vecs.to(dtype=torch.float16)
+        obj_vecs = obj_vecs.to(dtype=torch.float16)
+        pred_vecs = pred_vecs.to(dtype=torch.float16)
             
         gcn_vectors, token_types, obj_idx, sub_ptr, obj_ptr = prepare_batch_for_embedder(
             obj_vecs, pred_vecs, triples_flat, obj_to_img, triple_to_img, device
@@ -221,13 +223,13 @@ def main():
         x_clean, x_mixed = adapter(gcn_vectors, token_types, obj_idx, sub_ptr, obj_ptr)
         
         # Combine for Dual Input
-        cond_embeddings = torch.cat([x_clean, x_mixed], dim=-1)
+        cond_embeddings = torch.cat([x_clean, x_mixed], dim=-1).to(dtype=torch.float16)
         
         # Free GCN and Adapter
-        # gcn.to("cpu")
-        # adapter.to("cpu")
-        # del gcn, adapter, obj_vecs, pred_vecs, gcn_vectors, x_clean, x_mixed
-        # torch.cuda.empty_cache()
+        gcn.to("cpu")
+        adapter.to("cpu")
+        del gcn, adapter, obj_vecs, pred_vecs, gcn_vectors, x_clean, x_mixed
+        torch.cuda.empty_cache()
         
         # Pad to 77 for SD compatibility (required for concatenation with uncond_embeddings)
         B, N, C = cond_embeddings.shape
@@ -244,7 +246,7 @@ def main():
     mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
     std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device)
     img_unnorm = img_tensor * std + mean
-    img_sd = img_unnorm * 2 - 1 # [0, 1] -> [-1, 1]
+    img_sd = (img_unnorm * 2 - 1).to(dtype=torch.float16) # [0, 1] -> [-1, 1]
     
     if args.inversion_type == "null_text":
         z_T, uncond_embeddings_list = null_text_inversion(pipe, img_sd, cond_embeddings, num_inference_steps=args.num_inference_steps)

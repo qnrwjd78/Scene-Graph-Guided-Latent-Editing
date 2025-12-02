@@ -3,6 +3,8 @@ import torch
 import os
 import sys
 import logging
+import random
+import numpy as np
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from diffusers import StableDiffusionPipeline
@@ -55,6 +57,26 @@ def prepare_batch_for_embedder(obj_vecs, pred_vecs, triples, obj_to_img, triple_
         
         curr_obj_vecs = obj_vecs[curr_obj_mask]
         curr_pred_vecs = pred_vecs[curr_pred_mask]
+        curr_triples = triples[curr_pred_mask]
+        
+        # Remove SEP token (__image__ node) and associated relationships
+        if curr_obj_vecs.shape[0] > 0:
+             # The last object is always __image__
+             curr_obj_vecs = curr_obj_vecs[:-1]
+             
+             # Filter predicates connected to the last object
+             global_obj_indices = torch.where(curr_obj_mask)[0]
+             sep_node_global_idx = global_obj_indices[-1]
+             
+             valid_pred_mask = (curr_triples[:, 2] != sep_node_global_idx)
+             
+             curr_pred_vecs = curr_pred_vecs[valid_pred_mask]
+             curr_triples = curr_triples[valid_pred_mask]
+             
+             # Update global_obj_indices to exclude SEP node
+             global_obj_indices = global_obj_indices[:-1]
+        else:
+             global_obj_indices = torch.tensor([], device=device)
         
         num_objs = curr_obj_vecs.shape[0]
         num_rels = curr_pred_vecs.shape[0]
@@ -76,10 +98,7 @@ def prepare_batch_for_embedder(obj_vecs, pred_vecs, triples, obj_to_img, triple_
         
         # Pointers
         # Need to map global object indices to local indices
-        global_obj_indices = torch.where(curr_obj_mask)[0]
         global_to_local = {g_idx.item(): l_idx for l_idx, g_idx in enumerate(global_obj_indices)}
-        
-        curr_triples = triples[curr_pred_mask] # (T, 3) -> s, p, o (global indices)
         
         curr_sub_ptr = [0] * num_objs
         curr_obj_ptr = [0] * num_objs
@@ -129,12 +148,27 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for LoRA")
+    parser.add_argument("--adapter_lr", type=float, default=1e-3, help="Learning rate for Adapter")
     parser.add_argument("--save_dir", type=str, default="checkpoints")
-    parser.add_argument("--max_samples", type=int, default=None, help="Limit the number of training samples for debugging")
+    parser.add_argument("--tensorboard_dir", type=str, default=None, help="Custom path for tensorboard logs")
+    parser.add_argument("--max_train_samples", type=int, default=None, help="Limit the number of training samples")
+    parser.add_argument("--max_val_samples", type=int, default=100, help="Limit the number of validation samples")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4, help="Number of updates steps to accumulate before performing a backward/update pass.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     args = parser.parse_args()
+    
+    # Set Seed
+    if args.seed is not None:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+            # Ensure deterministic behavior for CuDNN (Convolution operations)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
     
     # Setup logging
     os.makedirs(args.save_dir, exist_ok=True)
@@ -144,7 +178,13 @@ def main():
         format='%(asctime)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    writer = SummaryWriter(log_dir=os.path.join(args.save_dir, 'tensorboard'))
+    
+    # Tensorboard setup
+    if args.tensorboard_dir:
+        log_dir = args.tensorboard_dir
+    else:
+        log_dir = os.path.join(args.save_dir, 'tensorboard')
+    writer = SummaryWriter(log_dir=log_dir)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -174,10 +214,12 @@ def main():
     # Adapter (Trainable)
     adapter = SceneGraphEmbedder().to(device)
     
-    # Optimizer: Adapter + LoRA
+    # Optimizer: Adapter (Higher LR) + LoRA (Lower LR)
+    # Adapter needs to learn mapping from scratch -> args.adapter_lr
+    # LoRA fine-tunes pre-trained weights -> args.lr
     optimizer = torch.optim.Adam([
-        {'params': adapter.parameters()},
-        {'params': lora_params}
+        {'params': adapter.parameters(), 'lr': args.adapter_lr},
+        {'params': lora_params, 'lr': args.lr}
     ], lr=args.lr)
     
     start_epoch = 0
@@ -216,9 +258,20 @@ def main():
         image_dir=os.path.join(project_root, "datasets/vg/images"),
         image_size=(512, 512),
         normalize_images=False,
-        max_samples=args.max_samples
+        max_samples=args.max_train_samples
     )
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, collate_fn=vg_collate_fn)
+    
+    # Validation Data
+    val_dataset = VGDataset(
+        vocab_path=os.path.join(project_root, "datasets/vg/vocab.json"),
+        h5_path=os.path.join(project_root, "datasets/vg/val.h5"),
+        image_dir=os.path.join(project_root, "datasets/vg/images"),
+        image_size=(512, 512),
+        normalize_images=False,
+        max_samples=args.max_val_samples
+    )
+    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=vg_collate_fn)
     
     # 3. Training Loop
     print("Starting training...")
@@ -288,20 +341,74 @@ def main():
             pbar.set_postfix(loss=loss.item() * args.gradient_accumulation_steps)
             writer.add_scalar("Loss/train", loss.item() * args.gradient_accumulation_steps, global_step)
             
+        # Validation Loop
+        adapter.eval()
+        val_loss = 0.0
+        val_steps = 0
+        print("Running validation...")
+        
+        with torch.no_grad():
+            for batch in tqdm(val_dataloader, desc="Validation"):
+                images, objects, boxes, triples, obj_to_img, triple_to_img = batch
+                
+                images = images.to(device)
+                objects = objects.to(device)
+                boxes = boxes.to(device)
+                triples = triples.to(device)
+                obj_to_img = obj_to_img.to(device)
+                triple_to_img = triple_to_img.to(device)
+                
+                graphs = [objects, boxes, triples, obj_to_img, triple_to_img]
+                
+                # Normalize images
+                images = images * 2.0 - 1.0
+                
+                # Encode Image
+                latents = pipe.vae.encode(images).latent_dist.sample()
+                latents = latents * pipe.vae.config.scaling_factor
+                
+                # Encode Graph
+                obj_vecs, pred_vecs = gcn.get_raw_features(graphs)
+                
+                # Prepare Batch
+                gcn_vectors, token_types, obj_idx, sub_ptr, obj_ptr = prepare_batch_for_embedder(
+                    obj_vecs, pred_vecs, triples, obj_to_img, triple_to_img, device
+                )
+                
+                # Adapter Forward
+                x_clean, x_mixed = adapter(gcn_vectors, token_types, obj_idx, sub_ptr, obj_ptr)
+                context_embedding = torch.cat([x_clean, x_mixed], dim=-1)
+                
+                # Diffusion Loss
+                noise = torch.randn_like(latents)
+                timesteps = torch.randint(0, pipe.scheduler.config.num_train_timesteps, (latents.shape[0],), device=device)
+                noisy_latents = pipe.scheduler.add_noise(latents, noise, timesteps)
+                
+                noise_pred = pipe.unet(noisy_latents, timesteps, encoder_hidden_states=context_embedding).sample
+                
+                loss = F.mse_loss(noise_pred, noise)
+                val_loss += loss.item()
+                val_steps += 1
+                
+        avg_val_loss = val_loss / val_steps if val_steps > 0 else 0.0
+        print(f"Validation Loss: {avg_val_loss:.4f}")
+        writer.add_scalar("Loss/validation", avg_val_loss, epoch + 1)
+        
         # Save Checkpoint
-        save_path = os.path.join(args.save_dir, f"adapter_epoch_{epoch+1}.pth")
-        
-        # Save LoRA weights
-        lora_state_dict = {k: v for k, v in pipe.unet.state_dict().items() if "lora" in k}
-        
-        torch.save({
-            'epoch': epoch + 1,
-            'global_step': global_step,
-            'model_state_dict': adapter.state_dict(),
-            'lora_state_dict': lora_state_dict,
-            'optimizer_state_dict': optimizer.state_dict(),
-        }, save_path)
-        print(f"Saved checkpoint to {save_path}")
+        if (epoch + 1) % 10 == 0:
+            save_path = os.path.join(args.save_dir, f"adapter_epoch_{epoch+1}.pth")
+            
+            # Save LoRA weights
+            lora_state_dict = {k: v for k, v in pipe.unet.state_dict().items() if "lora" in k}
+            
+            torch.save({
+                'epoch': epoch + 1,
+                'global_step': global_step,
+                'model_state_dict': adapter.state_dict(),
+                'lora_state_dict': lora_state_dict,
+                'optimizer_state_dict': optimizer.state_dict(),
+            }, save_path)
+            print(f"Saved checkpoint to {save_path}")
 
 if __name__ == "__main__":
     main()

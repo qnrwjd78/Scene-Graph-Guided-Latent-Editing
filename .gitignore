@@ -1,6 +1,7 @@
 # Large/local assets
 pretrained/
 datasets/
+checkpoints/
 *.ckpt
 *.pth
 

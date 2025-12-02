@@ -42,6 +42,8 @@ class MasaCtrlSelfAttnProcessor:
                 # Just use current key/value (standard attention)
                 pass
             else:
+                stored_k = stored_k.to(query.device)
+                stored_v = stored_v.to(query.device)
                 if self.old_box is not None and self.new_box is not None and self.warping_fn is not None:
                     # Check if we need to warp (e.g. IoU check or just always warp if boxes provided)
                     # Here we assume we always warp if boxes are present

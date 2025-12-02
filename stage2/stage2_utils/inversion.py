@@ -92,6 +92,11 @@ def null_text_inversion(pipe, x0, prompt_embeds, num_inference_steps=50, num_inn
     with torch.no_grad():
         uncond_embeddings_init = pipe.text_encoder(uncond_input.input_ids.to(pipe.device))[0]
         
+    # Handle Dual Input (768*2)
+    if prompt_embeds.shape[-1] == uncond_embeddings_init.shape[-1] * 2:
+        # Concatenate to match dimension
+        uncond_embeddings_init = torch.cat([uncond_embeddings_init, uncond_embeddings_init], dim=-1)
+        
     uncond_embeddings_list = []
     
     bar = tqdm(total=num_inference_steps, desc="Null-text Optimization")
@@ -149,7 +154,7 @@ class AttentionStore:
         self.store = []
         
     def append(self, k, v):
-        self.store.append((k, v))
+        self.store.append((k.cpu(), v.cpu()))
         
     def pop(self):
         if len(self.store) > 0:
