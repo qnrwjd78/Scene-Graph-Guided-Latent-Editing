@@ -78,11 +78,15 @@ class VGDataset(Dataset):
     - triples: LongTensor of shape (T, 3) where triples[t] = [i, p, j]
       means that (objs[i], p, objs[j]) is a triple.
     """
-    img_path = os.path.join(self.image_dir, self.image_paths[index])
+    img_path_raw = self.image_paths[index]
+    if isinstance(img_path_raw, bytes):
+        img_path_raw = img_path_raw.decode('utf-8')
+
+    img_path = os.path.join(self.image_dir, img_path_raw)
     
     # Handle bytes vs str for image paths if necessary (h5py sometimes returns bytes)
-    if isinstance(img_path, bytes):
-        img_path = img_path.decode('utf-8')
+    # if isinstance(img_path, bytes):
+    #     img_path = img_path.decode('utf-8')
 
     with open(img_path, 'rb') as f:
       with PIL.Image.open(f) as image:

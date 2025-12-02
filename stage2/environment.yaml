@@ -1,0 +1,25 @@
+name: sgdiff_stage2
+channels:
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.9
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=11.8
+  - pip
+  - pip:
+    - diffusers
+    - transformers
+    - accelerate
+    - safetensors
+    - h5py
+    - pillow
+    - numpy
+    - scipy
+    - tqdm
+    - omegaconf
+    - ftfy
+    - regex

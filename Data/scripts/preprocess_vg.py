@@ -18,7 +18,7 @@ VG_DIR = 'datasets/vg'
 parser = argparse.ArgumentParser()
 
 # Input data
-parser.add_argument('--splits_json', default='sg2im/data/vg_splits.json')
+parser.add_argument('--splits_json', default='Data/sg2im/data/vg_splits.json')
 parser.add_argument('--images_json',
     default=os.path.join(VG_DIR, 'image_data.json'))
 parser.add_argument('--objects_json',

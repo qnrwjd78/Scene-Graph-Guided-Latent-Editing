@@ -40,28 +40,24 @@ class GCNWrapper(nn.Module):
             
     def forward(self, graphs):
         # graphs: [objects, boxes, triples, obj_to_img, triple_to_img]
-        # We only need the graph encoding part
         
-        # sgCLIP.forward signature:
-        # forward(self, image, graphs) -> ...
-        # But we can access the graph encoder directly if needed, or use the forward method with dummy image
-        
-        # Looking at sgCLIP/model.py, it seems we can call encode_graph if it exists, 
-        # or we can look at how forward is implemented.
-        # Based on previous context, there might be an encode_graph_local_global method or similar.
-        # Let's assume we can use the internal modules.
-        
-        # Actually, let's check sgCLIP/model.py content again if possible, but for now I'll implement based on standard usage.
-        # The user mentioned "encode_graph_local_global" in the previous grep.
-        
-        # Re-implementing the graph encoding part from sgCLIP if needed, or calling the method.
-        # Let's try to call the method if it exists.
+        # Infer batch size from obj_to_img
+        obj_to_img = graphs[3]
+        if obj_to_img.numel() > 0:
+            batch_size = obj_to_img.max().item() + 1
+        else:
+            batch_size = 1 # Default or handle empty
+            
+        # Create dummy image for sgCLIP signature
+        # sgCLIP uses img.shape to determine batch_size
+        dummy_img = torch.zeros(batch_size, 3, 224, 224, device=obj_to_img.device)
         
         if hasattr(self.model, 'encode_graph_local_global'):
-             local_graph_features, global_graph_features = self.model.encode_graph_local_global(graphs)
+             local_graph_features, global_graph_features = self.model.encode_graph_local_global(dummy_img, graphs)
              return local_graph_features, global_graph_features
         else:
-            # Fallback: inspect model structure or assume standard forward
-            # For now, let's assume the method exists as seen in previous grep
             raise AttributeError("Model does not have encode_graph_local_global method")
+
+    def get_raw_features(self, graphs):
+        return self.model.get_raw_features(graphs)
 

@@ -39,9 +39,9 @@ def get_model(args):
 
 def build_loaders():
     dset_kwargs = {
-        'vocab_path': 'Data/datasets/vg/vocab.json',
-        'h5_path': 'Data/datasets/vg/test.h5',
-        'image_dir': 'Data/datasets/vg/images',
+        'vocab_path': 'datasets/vg/vocab.json',
+        'h5_path': 'datasets/vg/test.h5',
+        'image_dir': 'datasets/vg/images',
         'image_size': (256, 256),
         'max_samples': None,
         'max_objects': 30,
@@ -82,7 +82,7 @@ def main():
     ddim_steps = args.ddim_steps
     ddim_eta = args.ddim_eta
 
-    vocab_file = 'Data/datasets/vg/vocab.json'
+    vocab_file = 'datasets/vg/vocab.json'
     with open(vocab_file, 'r') as f:
         vocab = json.load(f)
 

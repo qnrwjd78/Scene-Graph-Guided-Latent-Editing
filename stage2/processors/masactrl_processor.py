@@ -37,25 +37,30 @@ class MasaCtrlSelfAttnProcessor:
             # Retrieve and Warp
             stored_k, stored_v = self.attn_store.pop()
             
-            if self.old_box is not None and self.new_box is not None and self.warping_fn is not None:
-                # Check if we need to warp (e.g. IoU check or just always warp if boxes provided)
-                # Here we assume we always warp if boxes are present
-                
-                # Reshape for warping: (B*Head, Seq, Dim) -> (B, Head, H, W, Dim)
-                # We need to know H, W. usually sqrt(Seq)
-                h = w = int(sequence_length ** 0.5)
-                
-                # Warp K
-                warped_k = self.warping_fn(stored_k, self.old_box, self.new_box, h, w)
-                # Warp V
-                warped_v = self.warping_fn(stored_v, self.old_box, self.new_box, h, w)
-                
-                key = warped_k
-                value = warped_v
+            if stored_k is None or stored_v is None:
+                # Fallback if store is empty (e.g. first run or mismatch)
+                # Just use current key/value (standard attention)
+                pass
             else:
-                # Use stored features as is (reconstruction)
-                key = stored_k
-                value = stored_v
+                if self.old_box is not None and self.new_box is not None and self.warping_fn is not None:
+                    # Check if we need to warp (e.g. IoU check or just always warp if boxes provided)
+                    # Here we assume we always warp if boxes are present
+                    
+                    # Reshape for warping: (B*Head, Seq, Dim) -> (B, Head, H, W, Dim)
+                    # We need to know H, W. usually sqrt(Seq)
+                    h = w = int(sequence_length ** 0.5)
+                    
+                    # Warp K
+                    warped_k = self.warping_fn(stored_k, self.old_box, self.new_box, h, w)
+                    # Warp V
+                    warped_v = self.warping_fn(stored_v, self.old_box, self.new_box, h, w)
+                    
+                    key = warped_k
+                    value = warped_v
+                else:
+                    # Use stored features as is (reconstruction)
+                    key = stored_k
+                    value = stored_v
 
         attention_probs = attn.get_attention_scores(query, key, attention_mask)
         hidden_states = torch.bmm(attention_probs, value)

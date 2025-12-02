@@ -96,6 +96,47 @@ class sgCLIP(nn.Module):
 
         return graph_local_fea, graph_global_fea
 
+    def encode_graph_features(self, graph):
+        objs, boxes, triples, obj_to_img, triples_to_img = graph
+        s, p, o = triples.chunk(3, dim=1)
+        s, p, o = [x.squeeze(1) for x in [s, p, o]]
+        edges = torch.stack([s, o], dim=1)
+
+        obj_vecs = self.obj_embeddings(objs)
+        pred_vecs = self.pred_embeddings(p)
+
+        if isinstance(self.graph_conv, nn.Linear):
+            obj_vecs = self.graph_conv(obj_vecs)
+        else:
+            obj_vecs, pred_vecs = self.graph_conv(obj_vecs, pred_vecs, edges)
+        if self.graph_net is not None:
+            obj_vecs, pred_vecs = self.graph_net(obj_vecs, pred_vecs, edges)
+
+        # Global Branch
+        obj_fea = self.pool_samples(obj_vecs, obj_to_img)
+        pred_fea = self.pool_samples(pred_vecs, triples_to_img)
+        graph_global_fea = self.graph_projection(torch.cat([obj_fea, pred_fea], dim=1))
+
+        return obj_vecs, graph_global_fea
+
+    def get_raw_features(self, graph):
+        objs, boxes, triples, obj_to_img, triples_to_img = graph
+        s, p, o = triples.chunk(3, dim=1)
+        s, p, o = [x.squeeze(1) for x in [s, p, o]]
+        edges = torch.stack([s, o], dim=1)
+
+        obj_vecs = self.obj_embeddings(objs)
+        pred_vecs = self.pred_embeddings(p)
+
+        if isinstance(self.graph_conv, nn.Linear):
+            obj_vecs = self.graph_conv(obj_vecs)
+        else:
+            obj_vecs, pred_vecs = self.graph_conv(obj_vecs, pred_vecs, edges)
+        if self.graph_net is not None:
+            obj_vecs, pred_vecs = self.graph_net(obj_vecs, pred_vecs, edges)
+            
+        return obj_vecs, pred_vecs
+
     def forward(self, image, graph):
         local_image_feature, global_image_features = self.encode_image_local_global(image)
         norm_global_image_features = F.normalize(global_image_features, dim=-1)
