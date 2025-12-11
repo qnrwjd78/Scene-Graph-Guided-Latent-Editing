@@ -2,36 +2,34 @@
 
 This directory contains the implementation of the inference and editing stage using Stable Diffusion.
 
-## Structure
-
-- **config/**: Configuration files.
-- **models/**: 
-  - `gcn_wrapper.py`: Wrapper for the Stage 1 Scene Graph Encoder.
-  - `graph_adapter.py`: Trainable adapter to map graph embeddings to SD space.
-- **processors/**: Custom attention processors for editing.
-  - `masactrl_processor.py`: Handles feature warping and injection in Self-Attention.
-  - `box_attn_processor.py`: Handles box-guided masking in Cross-Attention.
-- **utils/**: Helper functions for inversion, warping, and data loading.
-- **scripts/**:
-  - `train_adapter.py`: Script to train the Graph Adapter.
-  - `sample_edit.py`: Script to perform editing (Inversion -> Warping -> Generation).
+## Structure (경량화)
+- **models/**
+  - `graph_adapter.py`: 트리플릿 GCN + IP-Adapter 스타일 cross-attn 브리지.
+- **scripts/**
+  - `train_adapter.py`: 캡션+그래프 병렬 조건으로 어댑터 학습(SD 고정).
+  - `sample_edit.py`: 캡션 + 사전 인코딩된 그래프로 샘플 생성.
 
 ## Usage
 
-### 1. Train Adapter
-First, train the adapter to align the Scene Graph Encoder with Stable Diffusion.
+### 1. Train Adapter (caption + scene graph)
+- Prepare a torch file (list of dicts) where each dict has:
+  `pixel_values` (tensor scaled to [-1,1]), `caption` (str),
+  `node_feats`, `rel_feats`, `triples`, `obj_to_img`.
+- Then run:
 ```bash
-python scripts/train_adapter.py --epochs 10
+python scripts/train_adapter.py --data_path path/to/data.pt --epochs 10
 ```
 
-### 2. Edit Image
-Run the editing script with an input image.
+### 2. Generate with caption + graph
+Save a single-graph torch file containing `node_feats`, `rel_feats`, `triples`, `obj_to_img`, then:
 ```bash
-python scripts/sample_edit.py --image_path path/to/image.jpg
+python scripts/sample_edit.py --graph_path path/to/graph.pt --caption "a cat sits on a chair"
 ```
 
 ## Requirements
 - `diffusers`
 - `transformers`
 - `torch`
-- `stage1` weights (pretrained/sip_vg.pt)
+- `diffusers`
+- `transformers`
+- `torch`

@@ -1,71 +1,58 @@
-# Diffusion-Based Scene Graph to Image Generation with Masked Contrastive Pre-Training
-<a href="https://arxiv.org/abs/2211.11138"><img src="https://img.shields.io/badge/arXiv-2211.11138-blue.svg" height=22.5></a>
+# Scene-Graph Guided Latent Editing (CLIP + Stable Diffusion)
 
-Official Implementation for [Diffusion-Based Scene Graph to Image Generation with Masked Contrastive Pre-Training](https://arxiv.org/abs/2211.11138). 
+두 단계로 구성된 간단한 파이프라인입니다.
+- **Stage 1 (새로 작성)**: CLIP 텍스트 임베딩을 입력으로 받아 트리플릿 GCN으로 그래프 임베딩을 학습하고, 이를 CLIP 이미지 임베딩과 대조학습으로 정렬합니다.
+- **Stage 2 (갱신)**: 학습된 그래프 임베딩을 Stable Diffusion UNet의 cross-attention에 IP-Adapter 스타일로 주입하여, 캡션 + scene graph 이중 조건으로 이미지를 생성/편집합니다.
 
-🚩 New Updates : We release [LAION-SG](https://arxiv.org/abs/2412.08580), [a large-scale dataset](https://huggingface.co/datasets/mengcy/LAION-SG) with high-quality structural annotations of scene graphs (SG), which precisely describe attributes and relationships of multiple objects, effectively representing the semantic structure in complex scenes. Based on LAION-SG, we also provide a new foundation model [SDXL-SG](https://drive.google.com/file/d/1mdC3Np4KkV9V24K1gcyddsG5AIv5S0MT/view?usp=sharing) to incorporate structural annotation information into the generation process.
-## Overview of The Proposed SGDiff
+## 구조
+- `stage1/`
+  - `models/gcn_clip.py`: CLIP 정렬용 트리플릿 GCN + 글로벌 프로젝터.
+  - `scripts/train_gcn_clip.py`: CLIP 텍스트 임베딩을 이용한 그래프-이미지 대조학습 스크립트.
+- `stage2/`
+  - `models/graph_adapter.py`: 트리플릿 GCN + graph K/V를 cross-attn에 추가하는 어댑터(IP-Adapter 스타일).
+  - `scripts/train_adapter.py`: 캡션 + 그래프 병렬 조건으로 SD UNet 어댑터 학습(UNet/Text/VAE는 고정).
+  - `scripts/sample_edit.py`: 캡션 + 사전 인코딩된 그래프를 넣어 샘플 생성.
 
-<div align=center><img width="850" alt="image" src="https://user-images.githubusercontent.com/62683396/202852210-d91d6a63-f04d-4a02-ae5f-55f00f8c1ec5.png"></div>
-
-
-
-
-## Environment
-```
-git clone https://github.com/YangLing0818/SGDiff.git
-cd SGDiff
-
-conda env create -f sgdiff.yaml
-conda activate sgdiff
-mkdir pretrained
-```
-
-
-## Data and Model Preparation
-
-The instructions of data pre-processing can be [found here](https://github.com/YangLing0818/SGDiff/blob/main/DATA.md).
-
-Our masked contrastive pre-trained models of SG-image pairs for COCO and VG datasets are provided in [here](https://www.dropbox.com/scl/fo/lccvtxuwxxblo3atnxlmg/h?rlkey=duy7dcwmy3a64auqoqiw8dv2e&dl=0), please download them and put them in the 'pretrained' directory.
-
-And the pretrained VQVAE for embedding image to latent can be obtained from https://ommer-lab.com/files/latent-diffusion/vq-f8.zip
-
-## Masked Contrastive Pre-Training
-
-The instructions of SG-image pretraining can be found in the folder "sg_image_pretraining/"
-
-## Diffusion Training
-Kindly note that one **should not skip the training stage** and test directly. For single gpu, one can use
-```shell
-python trainer.py --base CONFIG_PATH -t --gpus 0,
-```
-
-***NOT OFFICIAL:***
-Alternatively, if you don't want to train the model from scratch you can download trained weights from the following link:
-[VG weight](https://drive.google.com/file/d/1bzYgv_lmCUL7wrh9G3t3169ITbAuMbYo/view?usp=sharing), [COCO weight](https://drive.google.com/file/d/1HAj2C3xHTrm-txVCq_cSSbr5NvFPnasR/view?usp=sharing) 
-
-Checkpoint trained for only 150 epochs.
-
-## Sampling
-
-```shell
-python testset_ddim_sampler.py
-```
-
-## Citation
-If you found the codes are useful, please cite our paper
-```
-@article{yang2022diffusionsg,
-  title={Diffusion-based scene graph to image generation with masked contrastive pre-training},
-  author={Yang, Ling and Huang, Zhilin and Song, Yang and Hong, Shenda and Li, Guohao and Zhang, Wentao and Cui, Bin and Ghanem, Bernard and Yang, Ming-Hsuan},
-  journal={arXiv preprint arXiv:2211.11138},
-  year={2022}
-}
-
-@article{li2024laion,
-  title={LAION-SG: An Enhanced Large-Scale Dataset for Training Complex Image-Text Models with Structural Annotations},
-  author={Li, Zejian and Meng, Chenye and Li, Yize and Yang, Ling and Zhang, Shengyuan and Ma, Jiarui and Li, Jiayi and Yang, Guang and Yang, Changyuan and Yang, Zhiyuan and others},
-  journal={arXiv preprint arXiv:2412.08580},
-  year={2024}
+## Stage 1: CLIP 그래프 인코더 학습
+데이터 포맷(torch 저장 리스트):
+```python
+{
+  "node_texts": List[str],
+  "rel_texts": List[str],
+  "triples": LongTensor [T,3] (subj_idx, rel_idx, obj_idx),
+  "image_emb": Tensor [clip_dim]  # CLIP 이미지 임베딩(사전 계산)
 }
 ```
+학습 예시:
+```bash
+python stage1/scripts/train_gcn_clip.py --data_path data/stage1_graphs.pt --epochs 5
+```
+손실: 그래프 글로벌 임베딩과 CLIP 이미지 임베딩 간의 양방향 InfoNCE(temperature 사용).
+
+## Stage 2: 그래프 어댑터 + Stable Diffusion
+데이터 포맷(torch 저장 리스트):
+```python
+{
+  "pixel_values": Tensor [3,H,W]  # [-1,1] 범위로 정규화된 이미지
+  "caption": str,
+  "node_feats": Tensor [N_nodes, node_dim],  # CLIP/VLM에서 얻은 노드 임베딩
+  "rel_feats": Tensor [N_rels, rel_dim],     # 관계 임베딩
+  "triples": LongTensor [T,3],
+  "obj_to_img": LongTensor [N_nodes]
+}
+```
+학습 예시:
+```bash
+python stage2/scripts/train_adapter.py --data_path data/stage2_pairs.pt --epochs 10
+```
+
+생성 예시(단일 그래프 torch 파일):
+```bash
+python stage2/scripts/sample_edit.py --graph_path data/sample_graph.pt --caption "a cat sits on a chair"
+```
+
+## 요구사항
+- `torch`
+- `transformers`
+- `diffusers`
+- (옵션) GPU CUDA 환경
