@@ -30,9 +30,25 @@ class GCNWrapper(nn.Module):
             print(f"Loading stage1 weights from {checkpoint_path}")
             checkpoint = torch.load(checkpoint_path, map_location='cpu')
             if 'state_dict' in checkpoint:
-                self.model.load_state_dict(checkpoint['state_dict'], strict=False)
+                state_dict = checkpoint['state_dict']
             else:
-                self.model.load_state_dict(checkpoint, strict=False)
+                state_dict = checkpoint
+            
+            # Filter out size mismatches
+            model_state_dict = self.model.state_dict()
+            filtered_state_dict = {}
+            for k, v in state_dict.items():
+                if k in model_state_dict:
+                    if v.shape == model_state_dict[k].shape:
+                        filtered_state_dict[k] = v
+                    else:
+                        print(f"⚠️ Skipping {k}: shape mismatch (Checkpoint: {v.shape}, Model: {model_state_dict[k].shape})")
+            
+            self.model.load_state_dict(filtered_state_dict, strict=False)
+            print(f"✅ Successfully loaded Stage 1 GCN weights from {checkpoint_path}")
+        else:
+            print(f"⚠️ WARNING: Stage 1 checkpoint not found at {checkpoint_path}. GCN is initialized randomly!")
+            print("⚠️ This will cause the model to learn from garbage inputs. Please check 'pretrained/sip_vg.pt'.")
         
         # Freeze the model
         for param in self.model.parameters():

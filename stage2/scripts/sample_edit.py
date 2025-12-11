@@ -151,6 +151,7 @@ def main():
     parser.add_argument("--inversion_type", type=str, default="ddim", choices=["ddim", "null_text"])
     parser.add_argument("--num_inference_steps", type=int, default=50, help="Number of denoising steps")
     parser.add_argument("--save_attn_map", action="store_true", help="Save cross-attention maps")
+    parser.add_argument("--dataset", type=str, default="vg", help="Dataset to use: vg or vg_clevr")
     args = parser.parse_args()
     
     os.makedirs(args.output_dir, exist_ok=True)
@@ -168,7 +169,7 @@ def main():
     # GCN
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     gcn = GCNWrapper(
-        vocab_file=os.path.join(project_root, "datasets/vg/vocab.json"),
+        vocab_file=os.path.join(project_root, f"datasets/{args.dataset}/vocab.json"),
         checkpoint_path=os.path.join(project_root, "pretrained/sip_vg.pt")
     ).to(device)
     gcn.eval()
@@ -199,9 +200,9 @@ def main():
     # 2. Prepare Data
     print(f"Loading data (Index {args.image_index})...")
     dataset = VGDataset(
-        vocab_path=os.path.join(project_root, "datasets/vg/vocab.json"),
-        h5_path=os.path.join(project_root, "datasets/vg/val.h5"),
-        image_dir=os.path.join(project_root, "datasets/vg/images"),
+        vocab_path=os.path.join(project_root, f"datasets/{args.dataset}/vocab.json"),
+        h5_path=os.path.join(project_root, f"datasets/{args.dataset}/val.h5"),
+        image_dir=os.path.join(project_root, f"datasets/{args.dataset}/images"),
         image_size=(512, 512),
         max_objects=10
     )
@@ -229,8 +230,8 @@ def main():
             obj_vecs, pred_vecs, triples, obj_to_img, triple_to_img, device
         )
         
-        x_clean, x_mixed = adapter(gcn_vectors, token_types, obj_idx, sub_ptr, obj_ptr)
-        cond_embeddings = torch.cat([x_clean, x_mixed], dim=-1)
+        x_mixed = adapter(gcn_vectors, token_types, obj_idx, sub_ptr, obj_ptr)
+        cond_embeddings = x_mixed
         
         # Pad to 77 if needed
         B, N, C = cond_embeddings.shape
@@ -317,13 +318,16 @@ def main():
                 proc.warping_fn = warp_tensor
     
     # Generation Loop
-    latents = z_T
     pipe.scheduler.set_timesteps(args.num_inference_steps)
     timesteps = pipe.scheduler.timesteps
     
+    # --- 1. Generate with CFG 7.5 ---
+    latents = z_T.clone()
+    image_cfg75 = None
+    
     if args.inversion_type == "null_text":
-        print("Using Null-text generation loop...")
-        for i, t in enumerate(tqdm(timesteps, desc="Generating")):
+        print("Generating with CFG 7.5 (Null-text)...")
+        for i, t in enumerate(tqdm(timesteps, desc="Generating CFG 7.5")):
             uncond_embedding = uncond_embeddings_list[i]
             
             latent_model_input = torch.cat([latents] * 2)
@@ -340,8 +344,8 @@ def main():
             
         # Decode
         with torch.no_grad():
-            image = pipe.vae.decode(latents / pipe.vae.config.scaling_factor, return_dict=False)[0]
-            image = pipe.image_processor.postprocess(image, output_type="pil", do_denormalize=[True]*image.shape[0])[0]
+            image_cfg75 = pipe.vae.decode(latents / pipe.vae.config.scaling_factor, return_dict=False)[0]
+            image_cfg75 = pipe.image_processor.postprocess(image_cfg75, output_type="pil", do_denormalize=[True]*image_cfg75.shape[0])[0]
             
     else:
         # Standard DDIM Generation
@@ -351,14 +355,13 @@ def main():
             guidance_scale = 1.0
             
         # Create negative_prompt_embeds (Unconditional)
-        # We need 1536 dim (768*2)
         B = cond_embeddings.shape[0]
         uncond_input = pipe.tokenizer([""] * B, padding="max_length", max_length=77, return_tensors="pt")
         with torch.no_grad():
             uncond_embeddings = pipe.text_encoder(uncond_input.input_ids.to(device))[0]
         negative_prompt_embeds = torch.cat([uncond_embeddings, uncond_embeddings], dim=-1)
             
-        image = pipe(
+        image_cfg75 = pipe(
             prompt_embeds=cond_embeddings,
             negative_prompt_embeds=negative_prompt_embeds,
             latents=z_T,
@@ -366,7 +369,53 @@ def main():
             num_inference_steps=args.num_inference_steps
         ).images[0]
     
-    image.save(os.path.join(args.output_dir, f"result_{args.image_index}_{args.edit_type}_{args.inversion_type}.png"))
+    image_cfg75.save(os.path.join(args.output_dir, f"result_{args.image_index}_{args.edit_type}_{args.inversion_type}_cfg7.5.png"))
+
+    # --- 2. Generate with CFG 1.0 (No CFG) ---
+    latents = z_T.clone()
+    image_cfg10 = None
+    
+    if args.inversion_type == "null_text":
+        print("Generating with CFG 1.0 (Null-text)...")
+        for i, t in enumerate(tqdm(timesteps, desc="Generating CFG 1.0")):
+            uncond_embedding = uncond_embeddings_list[i]
+            
+            latent_model_input = torch.cat([latents] * 2)
+            latent_model_input = pipe.scheduler.scale_model_input(latent_model_input, t)
+            
+            concat_embeds = torch.cat([uncond_embedding, cond_embeddings])
+            
+            noise_pred = pipe.unet(latent_model_input, t, encoder_hidden_states=concat_embeds).sample
+            
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            # CFG 1.0: noise_pred = noise_pred_text
+            noise_pred = noise_pred_text
+            
+            latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
+            
+        # Decode
+        with torch.no_grad():
+            image_cfg10 = pipe.vae.decode(latents / pipe.vae.config.scaling_factor, return_dict=False)[0]
+            image_cfg10 = pipe.image_processor.postprocess(image_cfg10, output_type="pil", do_denormalize=[True]*image_cfg10.shape[0])[0]
+            
+    else:
+        # Standard DDIM Generation
+        # Create negative_prompt_embeds (Unconditional)
+        B = cond_embeddings.shape[0]
+        uncond_input = pipe.tokenizer([""] * B, padding="max_length", max_length=77, return_tensors="pt")
+        with torch.no_grad():
+            uncond_embeddings = pipe.text_encoder(uncond_input.input_ids.to(device))[0]
+        negative_prompt_embeds = torch.cat([uncond_embeddings, uncond_embeddings], dim=-1)
+            
+        image_cfg10 = pipe(
+            prompt_embeds=cond_embeddings,
+            negative_prompt_embeds=negative_prompt_embeds,
+            latents=z_T,
+            guidance_scale=1.0,
+            num_inference_steps=args.num_inference_steps
+        ).images[0]
+    
+    image_cfg10.save(os.path.join(args.output_dir, f"result_{args.image_index}_{args.edit_type}_{args.inversion_type}_cfg1.0.png"))
     
     # Save Attention Map
     if args.save_attn_map and map_store is not None:

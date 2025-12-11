@@ -4,11 +4,11 @@ from typing import Tuple, Union, List, Optional
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train_data", type=str, default='/home/huangzl/Data/datasets/vg/images', help="Path to training dataset")
+    parser.add_argument("--train_data", type=str, default='./datasets/vg/images', help="Path to training dataset")
 
-    parser.add_argument("--vocab_json", type=str, default='/home/huangzl/Data/datasets/vg/vocab.json', help="Path to json file of vocab.")
-    parser.add_argument("--train_h5", type=str, default='/home/huangzl/Data/datasets/vg/train.h5', help="Path to h5 file of train dataset.")
-    parser.add_argument("--val_h5", type=str, default='/home/huangzl/Data/datasets/vg/val.h5', help="Path to h5 file of validate dataset.")
+    parser.add_argument("--vocab_json", type=str, default='./datasets/vg/vocab.json', help="Path to json file of vocab.")
+    parser.add_argument("--train_h5", type=str, default='./datasets/vg/train.h5', help="Path to h5 file of train dataset.")
+    parser.add_argument("--val_h5", type=str, default='./datasets/vg/val.h5', help="Path to h5 file of validate dataset.")
     parser.add_argument("--max_objects_per_image", type=int, default=10, help="Max objects of each image.")
     parser.add_argument("--use_orphaned_objects", type=bool, default=True, help="Use orphaned objects or not in the image.")
     parser.add_argument("--include_relationships", type=bool, default=True, help="Obtain relationships annotations between objects in the dataset.")
@@ -38,6 +38,7 @@ def parse_args():
     parser.add_argument("--save_most_recent", action="store_true", default=False, help="Always save the most recent model trained to epoch_latest.pt.")
     parser.add_argument("--logs", type=str, default="./logs/", help="Where to store tensorboard logs. Use None to avoid storing logs.")
     parser.add_argument("--log_local", action="store_true", default=False, help="log files on local master, otherwise global master only.")
+    parser.add_argument("--resume", default=None, type=str, help="path to latest checkpoint (default: None)")
 
     parser.add_argument("--val_frequency", type=int, default=1, help="How often to run evaluation with val data.")
     parser.add_argument("--precision", choices=["amp", "amp_bfloat16", "fp16", "fp32"], default="amp", help="Floating point precision.")

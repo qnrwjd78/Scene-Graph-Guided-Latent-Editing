@@ -220,10 +220,10 @@ def main():
         )
         
         # Adapter Forward
-        x_clean, x_mixed = adapter(gcn_vectors, token_types, obj_idx, sub_ptr, obj_ptr)
+        x_mixed = adapter(gcn_vectors, token_types, obj_idx, sub_ptr, obj_ptr)
         
-        # Combine for Dual Input
-        cond_embeddings = torch.cat([x_clean, x_mixed], dim=-1).to(dtype=torch.float16)
+        # Single Input
+        cond_embeddings = x_mixed.to(dtype=torch.float16)
         
         # Free GCN and Adapter
         gcn.to("cpu")

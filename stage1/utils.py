@@ -99,7 +99,7 @@ def _boxes_to_grid(boxes, H, W):
 
     return grid
 
-def create_tensor_by_assign_samples_to_img(samples, sample_to_img, max_sample_per_img, batch_size):
+def create_tensor_by_assign_samples_to_img(samples, sample_to_img, max_sample_per_img, batch_size, subject_idxs=None, pred_idxs=None, obj_idxs=None):
     dtype, device = samples.dtype, samples.device
     N = batch_size
     D = samples.shape[1]
@@ -109,18 +109,100 @@ def create_tensor_by_assign_samples_to_img(samples, sample_to_img, max_sample_pe
     for i in range(N):
         s_idxs = (sample_to_img == i).nonzero().view(-1)
         sub_sample = samples[s_idxs]
+        
+        # 2025-12-07: Modified relationship selection logic to prioritize real relationships
+        # and handle dummy relationships intelligently.
+        if subject_idxs is not None and pred_idxs is not None and obj_idxs is not None:
+            sub_subject_idxs = subject_idxs[s_idxs]
+            sub_pred_idxs = pred_idxs[s_idxs]
+            sub_obj_idxs = obj_idxs[s_idxs]
+            
+            # Identify "real" relationships (not __in_image__ predicate and not __image__ object)
+            # Assuming 0 is the index for both __in_image__ and __image__ based on vocab check
+            is_dummy = (sub_pred_idxs == 0) | (sub_obj_idxs == 0)
+            real_indices = (~is_dummy).nonzero().view(-1)
+            dummy_indices = is_dummy.nonzero().view(-1)
+            
+            # 2.1 Prioritize real relationships
+            selected_indices = real_indices
+            
+            # 2.2 If not enough, fill with dummy
+            if len(selected_indices) < max_sample_per_img:
+                needed = max_sample_per_img - len(selected_indices)
+                
+                # 2.2.1 Prioritize dummy relationships where subject is NOT in selected real relationships
+                # We need the subject indices for this. 
+                # However, 'samples' here are already processed vectors, we don't have raw subject indices easily available 
+                # unless we pass them or infer them.
+                # BUT, the caller `encode_graph_local_global` constructs `triple_vec` from `s_obj_vec`, `pred_vecs`, `o_obj_vec`.
+                # It doesn't pass raw subject indices. 
+                # To strictly follow 2.2.1, we need subject indices.
+                remaining_slots = max_sample_per_img - len(selected_indices)
+                
+                # 2.2.1 Prioritize those where the subject is an object, not the predicate/object 
+                # from relations selected in 2.1.
+                # Get subjects of already selected real relationships
+                selected_subjects = sub_subject_idxs[selected_indices]
+                
+                # Filter dummy indices
+                dummy_subjects = sub_subject_idxs[dummy_indices]
+                
+                # Identify dummy relations where subject is NOT in selected_subjects
+                # We use a mask for this
+                # Note: This can be slow if loop, but tensors are small here (max 800)
+                # Using broadcasting for comparison
+                if len(selected_subjects) > 0:
+                    # (D_dummy, 1) == (1, N_selected) -> (D_dummy, N_selected)
+                    match_matrix = dummy_subjects.unsqueeze(1) == selected_subjects.unsqueeze(0)
+                    is_subject_covered = match_matrix.any(dim=1)
+                else:
+                    is_subject_covered = torch.zeros_like(dummy_subjects, dtype=torch.bool)
+                
+                priority_dummy_indices = dummy_indices[~is_subject_covered]
+                other_dummy_indices = dummy_indices[is_subject_covered]
+                
+                # Fill with priority dummies first
+                num_priority = len(priority_dummy_indices)
+                take_priority = min(remaining_slots, num_priority)
+                selected_indices = torch.cat([selected_indices, priority_dummy_indices[:take_priority]])
+                
+                remaining_slots -= take_priority
+                
+                # Fill with other dummies if needed
+                if remaining_slots > 0:
+                    take_other = min(remaining_slots, len(other_dummy_indices))
+                    selected_indices = torch.cat([selected_indices, other_dummy_indices[:take_other]])
+            
+            # If we have more than max, truncate (though logic above handles filling up to max, 
+            # real_indices might be > max)
+            if len(selected_indices) > max_sample_per_img:
+                selected_indices = selected_indices[:max_sample_per_img]
+                
+            sub_sample = sub_sample[selected_indices]
+            
+        else:
+            # Original logic (commented out)
+            # len_cur = sub_sample.shape[0]
+            # if len_cur > max_sample_per_img:
+            #     sub_sample = sub_sample[:max_sample_per_img, :]
+            
+            # Fallback to original truncation if indices not provided
+            if sub_sample.shape[0] > max_sample_per_img:
+                sub_sample = sub_sample[:max_sample_per_img]
+
+        # Padding logic (common)
         len_cur = sub_sample.shape[0]
-        if len_cur > max_sample_per_img:
-            sub_sample = sub_sample[:max_sample_per_img, :]
         if len_cur < max_sample_per_img:
             zero_vector = torch.zeros([1, D]).to(device)
             padding_vectors = torch.cat([copy.deepcopy(zero_vector) for _ in range(max_sample_per_img - len_cur)], dim=0) # [res, D]
             sub_sample = torch.cat([sub_sample, padding_vectors], dim=0)
+            
         sub_sample = sub_sample.unsqueeze(0)
         samples_per_img.append(sub_sample)
     samples_per_img = torch.cat(samples_per_img, dim=0).to(device)
 
     return samples_per_img
+
 
 def idx_to_one_hot(idx, num_classes):
     result = F.one_hot(idx, num_classes)

@@ -4,6 +4,7 @@ import os
 import sys
 import numpy as np
 from PIL import Image
+import matplotlib.pyplot as plt
 from diffusers import StableDiffusionPipeline, DDIMScheduler
 import torch.nn as nn
 
@@ -15,6 +16,7 @@ from models.graph_adapter import SceneGraphEmbedder
 from models.dual_lora import DualInputLoRALinear
 from stage2_utils.data_loader import VGDataset
 from stage2_utils.attention_map import AttentionStore, register_attention_map_saver
+from stage2_utils.visualization import draw_scene_graph_matplotlib
 
 def inject_dual_lora(unet):
     lora_params = []
@@ -133,6 +135,8 @@ def prepare_batch_for_embedder(obj_vecs, pred_vecs, triples, obj_to_img, triple_
     
     return padded_gcn_vectors, padded_token_types, padded_obj_idx, padded_sub_ptr, padded_obj_ptr
 
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to the checkpoint file (e.g., checkpoints/adapter_epoch_10.pth)")
@@ -141,6 +145,7 @@ def main():
     parser.add_argument("--num_inference_steps", type=int, default=50)
     parser.add_argument("--guidance_scale", type=float, default=7.5)
     parser.add_argument("--save_attn_map", action="store_true", help="Save cross-attention maps")
+    parser.add_argument("--dataset", type=str, default="vg", help="Dataset to use: vg or vg_clevr")
     args = parser.parse_args()
     
     os.makedirs(args.output_dir, exist_ok=True)
@@ -148,7 +153,7 @@ def main():
     
     # 1. Load Models
     print("Loading models...")
-    pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+    pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", safety_checker=None)
     pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
     pipe.to(device)
     
@@ -158,7 +163,7 @@ def main():
     # GCN
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     gcn = GCNWrapper(
-        vocab_file=os.path.join(project_root, "datasets/vg/vocab.json"),
+        vocab_file=os.path.join(project_root, f"datasets/{args.dataset}/vocab.json"),
         checkpoint_path=os.path.join(project_root, "pretrained/sip_vg.pt")
     ).to(device)
     gcn.eval()
@@ -189,9 +194,9 @@ def main():
     # 2. Prepare Data
     print(f"Loading data (Index {args.image_index})...")
     dataset = VGDataset(
-        vocab_path=os.path.join(project_root, "datasets/vg/vocab.json"),
-        h5_path=os.path.join(project_root, "datasets/vg/val.h5"),
-        image_dir=os.path.join(project_root, "datasets/vg/images"),
+        vocab_path=os.path.join(project_root, f"datasets/{args.dataset}/vocab.json"),
+        h5_path=os.path.join(project_root, f"datasets/{args.dataset}/val.h5"),
+        image_dir=os.path.join(project_root, f"datasets/{args.dataset}/images"),
         image_size=(512, 512),
         max_objects=10
     )
@@ -222,8 +227,8 @@ def main():
         )
         
         # Adapter Forward
-        x_clean, x_mixed = adapter(gcn_vectors, token_types, obj_idx, sub_ptr, obj_ptr)
-        context_embedding = torch.cat([x_clean, x_mixed], dim=-1)
+        x_mixed = adapter(gcn_vectors, token_types, obj_idx, sub_ptr, obj_ptr)
+        context_embedding = x_mixed
         
         # Pad to 77 for SD compatibility
         B, N, C = context_embedding.shape
@@ -234,11 +239,11 @@ def main():
             context_embedding = context_embedding[:, :77, :]
             
         # Create negative_prompt_embeds (Unconditional)
-        # We need 1536 dim (768*2)
+        # We need 768 dim (Single Input)
         uncond_input = pipe.tokenizer([""] * B, padding="max_length", max_length=77, return_tensors="pt")
         with torch.no_grad():
             uncond_embeddings = pipe.text_encoder(uncond_input.input_ids.to(device))[0]
-        negative_prompt_embeds = torch.cat([uncond_embeddings, uncond_embeddings], dim=-1)
+        negative_prompt_embeds = uncond_embeddings
         
         # Register Attention Saver if needed
         attn_store = None
@@ -261,14 +266,31 @@ def main():
         
         # Construct Scene Graph Text
         sg_text = f"Image Index: {args.image_index}\n\nObjects:\n"
+        
+        # Filtered Objects and Triples for Visualization
+        # We need to reconstruct the filtered lists to match what the model saw
+        
+        # 1. Filter Objects (Remove last one which is __image__)
+        filtered_objs = objs[:-1] if objs.shape[0] > 0 else objs
+        
+        # 2. Filter Triples (Remove __in_image__ relations)
+        # In VGDataset, __image__ is the last object.
+        # __in_image__ relations connect to this last object.
+        # We can filter by checking if object index is the last one.
+        last_obj_idx = objs.shape[0] - 1
+        filtered_triples = []
+        for t in triples:
+            if t[2].item() != last_obj_idx:
+                filtered_triples.append(t)
+        
         obj_names = []
-        for idx, obj_idx in enumerate(objs):
+        for idx, obj_idx in enumerate(filtered_objs):
             name = dataset.vocab['object_idx_to_name'][obj_idx.item()]
             obj_names.append(name)
             sg_text += f"[{idx}] {name}\n"
         
         sg_text += "\nRelationships:\n"
-        for t in triples:
+        for t in filtered_triples:
             s_idx = t[0].item()
             p_idx = t[1].item()
             o_idx = t[2].item()
@@ -285,11 +307,15 @@ def main():
             f.write(sg_text)
         print(f"Saved scene graph text to {sg_path}")
 
+        # Visualize Graph
+        draw_scene_graph_matplotlib(objs, triples, dataset.vocab, os.path.join(args.output_dir, f"graph_{args.image_index}.png"))
+        print(f"Saved scene graph visualization to {os.path.join(args.output_dir, f'graph_{args.image_index}.png')}")
+
         # Save Attention Map
         if args.save_attn_map and attn_store is not None:
-            # Use the names we just extracted
+            # Use the names we just extracted (Filtered)
             all_labels = obj_names[:]
-            for t in triples:
+            for t in filtered_triples:
                 p_idx = t[1].item()
                 p_name = dataset.vocab['pred_idx_to_name'][p_idx]
                 all_labels.append(p_name)

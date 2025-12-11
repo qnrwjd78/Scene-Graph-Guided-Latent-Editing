@@ -13,12 +13,12 @@ fully-connected.
 """
 
 
-VG_DIR = 'datasets/vg'
+VG_DIR = '/root/Scene-Graph-Guided-Latent-Editing/datasets/vg'
 
 parser = argparse.ArgumentParser()
 
 # Input data
-parser.add_argument('--splits_json', default='Data/sg2im/data/vg_splits.json')
+parser.add_argument('--splits_json', default='/root/Scene-Graph-Guided-Latent-Editing/Data/sg2im/data/vg_splits.json')
 parser.add_argument('--images_json',
     default=os.path.join(VG_DIR, 'image_data.json'))
 parser.add_argument('--objects_json',
@@ -51,7 +51,7 @@ parser.add_argument('--max_relationships_per_image', default=30, type=int)
 
 # Output
 parser.add_argument('--output_vocab_json',
-    default=os.path.join(VG_DIR, 'vocab.json'))
+    default=os.path.join(VG_DIR, 'vocab_expanded.json'))
 parser.add_argument('--output_h5_dir', default=VG_DIR)
 
 
@@ -104,7 +104,7 @@ def main(args):
   print('Writing HDF5 output files')
   for split_name, split_arrays in numpy_arrays.items():
     image_ids = list(split_arrays['image_ids'].astype(int))
-    h5_path = os.path.join(args.output_h5_dir, '%s.h5' % split_name)
+    h5_path = os.path.join(args.output_h5_dir, '%s_expanded.h5' % split_name)
     print('Writing file "%s"' % h5_path)
     with h5py.File(h5_path, 'w') as h5_file:
       for name, ary in split_arrays.items():

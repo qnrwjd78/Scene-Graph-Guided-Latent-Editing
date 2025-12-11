@@ -20,6 +20,7 @@ from models.graph_adapter import SceneGraphEmbedder
 from models.dual_lora import DualInputLoRALinear
 from stage2_utils.data_loader import VGDataset, vg_collate_fn
 from stage2_utils.daam import GLOBAL_ATTENTION_STORE, register_daam_processors, aggregate_attention_maps, visualize_and_save_maps
+from stage2_utils.visualization import draw_scene_graph_matplotlib
 
 # ============================================================================
 # Utils
@@ -222,10 +223,10 @@ def main():
             )
             
             # Adapter Forward
-            x_clean, x_mixed = adapter(gcn_vectors, token_types, obj_idx, sub_ptr, obj_ptr)
+            x_mixed = adapter(gcn_vectors, token_types, obj_idx, sub_ptr, obj_ptr)
             
-            # Combine for Dual Input
-            context_embedding = torch.cat([x_clean, x_mixed], dim=-1)
+            # Single Input
+            context_embedding = x_mixed
         
         # Generate
         GLOBAL_ATTENTION_STORE.reset()
@@ -274,3 +275,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```

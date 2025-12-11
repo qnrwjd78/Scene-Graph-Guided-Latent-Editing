@@ -113,8 +113,8 @@ def train_one_epoch(model, dataloader, epoch, optimizer, scaler, scheduler, args
             percent_complete = 100.0 * batch_count / num_batches_per_epoch
 
             total_loss_m.update(total_loss.item(), batch_size)
-            c_loss_m.update(total_loss.item(), batch_size)
-            g_loss_m.update(total_loss.item(), batch_size)
+            c_loss_m.update(c_loss.item(), batch_size)
+            g_loss_m.update(g_loss.item(), batch_size)
             logit_scale_scalar = logit_scale.item()
             logging.info(
                 f"Train Epoch: {epoch} [{num_samples:>{sample_digits}}/{samples_per_epoch} ({percent_complete:.0f}%)] "

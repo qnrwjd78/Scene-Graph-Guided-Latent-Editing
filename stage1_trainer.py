@@ -51,10 +51,13 @@ def trainer():
         log_filename = f'out-{args.rank}' if args.log_local else 'out.log'
         args.log_path = os.path.join(log_base_path, log_filename)
         if os.path.exists(args.log_path):
-            print(
-                "Error. Experiment already exists. Use --name {} to specify a new experiment."
-            )
-            return -1
+            if args.resume:
+                logging.info(f"Resuming experiment from {args.resume}")
+            else:
+                print(
+                    "Error. Experiment already exists. Use --name {} to specify a new experiment."
+                )
+                return -1
 
     args.log_level = logging.DEBUG if args.debug else logging.INFO
     setup_logging(args.log_path, args.log_level)
@@ -97,8 +100,7 @@ def trainer():
         device=device,
         force_quick_gelu=args.force_quick_gelu,
         pretrained_image=args.pretrained_image,
-        image_mean=args.image_mean,
-        image_std=args.image_std,
+
     )
 
     random_seed(args.seed, args.rank)
@@ -145,6 +147,19 @@ def trainer():
         scaler = GradScaler() if args.precision == "amp" else None
 
     start_epoch = 0
+    if args.resume:
+        if os.path.isfile(args.resume):
+            logging.info(f"=> loading checkpoint '{args.resume}'")
+            checkpoint = torch.load(args.resume, map_location='cpu')
+            start_epoch = checkpoint['epoch']
+            model.load_state_dict(checkpoint['state_dict'])
+            if optimizer is not None and 'optimizer' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer'])
+            if scaler is not None and 'scaler' in checkpoint:
+                scaler.load_state_dict(checkpoint['scaler'])
+            logging.info(f"=> loaded checkpoint '{args.resume}' (epoch {checkpoint['epoch']})")
+        else:
+            logging.info(f"=> no checkpoint found at '{args.resume}'")
     total_steps = len(train_dataloader) * args.epochs
     scheduler = cosine_lr(optimizer, args.lr, args.warmup, total_steps)
 

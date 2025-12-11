@@ -1,7 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from diffusers.models.attention_processor import Attention
+try:
+    from diffusers.models.attention_processor import Attention
+except ImportError:
+    from diffusers.models.attention import CrossAttention as Attention
 
 class MasaCtrlSelfAttnProcessor:
     def __init__(self, attn_store, is_inversion=False):

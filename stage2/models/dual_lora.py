@@ -7,7 +7,7 @@ class DualInputLoRALinear(nn.Module):
     Dual Input Strategy를 위한 Custom LoRA Layer.
     Frozen UNet에는 Clean Input을, LoRA에는 Mixed Input을 전달합니다.
     """
-    def __init__(self, original_linear, rank=4, alpha=4):
+    def __init__(self, original_linear, rank=64, alpha=64):
         super().__init__()
         self.original_linear = original_linear # Frozen Linear Layer
         self.in_features = original_linear.in_features
@@ -31,18 +31,14 @@ class DualInputLoRALinear(nn.Module):
         self.original_linear.requires_grad_(False)
 
     def forward(self, x):
-        # x shape: (Batch, Seq, Dim * 2) 
-        # We expect x to be concatenated [x_clean, x_mixed] along the last dimension
+        # x shape: (Batch, Seq, Dim)
+        # Single Input Strategy: Use the same input for both Frozen and LoRA paths
         
-        dim = x.shape[-1] // 2
-        x_clean = x[..., :dim]
-        x_mixed = x[..., dim:]
+        # 1. Frozen Path
+        frozen_out = self.original_linear(x)
         
-        # 1. Frozen Path (Clean Input)
-        frozen_out = self.original_linear(x_clean)
-        
-        # 2. LoRA Path (Mixed Input)
-        lora_out = self.lora_up(self.lora_down(x_mixed)) * self.scale
+        # 2. LoRA Path
+        lora_out = self.lora_up(self.lora_down(x)) * self.scale
         
         # 3. Combine
         return frozen_out + lora_out

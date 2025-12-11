@@ -90,9 +90,16 @@ class sgCLIP(nn.Module):
         # Local Branch
         s_obj_vec, o_obj_vec = obj_vecs[s], obj_vecs[o]
         triple_vec = torch.cat([s_obj_vec, pred_vecs, o_obj_vec], dim=1)
+        # 2025-12-07: Passed subject, predicate, and object indices to support refined selection logic
+        # graph_local_fea = create_tensor_by_assign_samples_to_img(samples=triple_vec, sample_to_img=triples_to_img,
+        #                                                         max_sample_per_img=self.max_sample_per_img,
+        #                                                         batch_size=batch_size)
         graph_local_fea = create_tensor_by_assign_samples_to_img(samples=triple_vec, sample_to_img=triples_to_img,
                                                                 max_sample_per_img=self.max_sample_per_img,
-                                                                batch_size=batch_size)
+                                                                batch_size=batch_size,
+                                                                subject_idxs=s,
+                                                                pred_idxs=p,
+                                                                obj_idxs=o)
 
         return graph_local_fea, graph_global_fea
 
